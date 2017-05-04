@@ -1,32 +1,45 @@
 extern crate voroni;
-extern crate ordered_float;
 
 use voroni::{Point, Triangle, bower_watson_with_super_triangle as bower_watson, NotNaN};
 
-/// Create a Point. Panics if given NaN.
-fn point(x: f64, y: f64) -> Point {
-    Point{x: NotNaN::new(x).unwrap(), y: NotNaN::new(y).unwrap()}
-}
-
 fn generate_corners() -> [Point; 4] {
     [
-        point(0.0, 0.0),
-        point(1.0, 0.0),
-        point(1.0, 1.0),
-        point(0.0, 1.0)
+        Point::new_unwrap(0.0, 0.0),
+        Point::new_unwrap(1.0, 0.0),
+        Point::new_unwrap(1.0, 1.0),
+        Point::new_unwrap(0.0, 1.0)
     ]
 }
 
 fn generate_super_triangle() -> Triangle {
     Triangle(
-        point(-1.0, -1.0),
-        point(-1.0, 4.0),
-        point(4.0, -1.0)
+        Point::new_unwrap(-1.0, -1.0),
+        Point::new_unwrap(-1.0, 4.0),
+        Point::new_unwrap(4.0, -1.0)
     )
 }
 
+fn generate_grid(points: u8) -> Vec<Point> {
+    let mut grid = Vec::with_capacity((points * points + 4) as usize);
+
+    for x in 0..points {
+        for y in 0..points {
+            grid.push(Point::new_unwrap((x + 1) as f64 / (points + 1) as f64, (y + 1) as f64 / (points + 1) as f64));
+        }
+    }
+
+    return grid;
+}
+
 fn main () {
-    let out = bower_watson(&generate_corners(), generate_super_triangle());
-    println!("{}", out);
+    let points = {
+        let mut points = generate_grid(3);
+        for point in generate_corners().into_iter() {
+            points.push(*point);
+        }
+        points
+    };
+    let out = bower_watson(&points, generate_super_triangle());
+    println!("{}", out * &NotNaN::new(4f64).unwrap());
     println!("End of program.");
 }
