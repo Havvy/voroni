@@ -1,6 +1,8 @@
 extern crate voroni;
 
-use voroni::{Point, Triangle, bower_watson_with_super_triangle as bower_watson, NotNaN};
+use voroni::NotNaN;
+use voroni::geometry::{Point, Triangle};
+use voroni::delaunay::bower_watson_with_super_triangle as bower_watson;
 
 fn generate_corners() -> [Point; 4] {
     [

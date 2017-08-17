@@ -192,8 +192,9 @@ impl Circle {
 pub struct Triangle(pub Point, pub Point, pub Point);
 
 impl Triangle {
-    pub fn super_triangle_of(point: &[Point]) -> Triangle {
-        unimplemented!();
+    /// Unimplemented!
+    pub fn super_triangle_of(_point: &[Point]) -> Triangle {
+        unimplemented!(); // FIXME(Havvy)
     }
 
     pub fn edges(&self) -> TriangleEdges {
@@ -287,7 +288,7 @@ pub struct TriangleVertexes<'t>{
 impl<'t> Iterator for TriangleVertexes<'t> {
     type Item = Point;
 
-    fn next(&mut self) -> Option<<Self as Iterator>::Item> {
+    fn next(&mut self) -> Option<Point> {
         if self.ix < 4 { self.ix += 1; }
 
         match self.ix {
