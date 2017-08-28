@@ -1,0 +1,1 @@
+struct PlainStruct; #[derive(PartialEq, PartialOrd)] struct Contains(PlainStruct);

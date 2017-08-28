@@ -53,7 +53,7 @@ impl fmt::Debug for Point {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialOrd, Ord)]
 pub struct LineSegment {
     pub from: Point, 
     pub to: Point
@@ -176,7 +176,7 @@ impl fmt::Display for Line {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Circle {
     center: Point,
     radius: NotNaN<f64>
@@ -188,7 +188,20 @@ impl Circle {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// Which direction the Triangle points are going in.
+///
+/// ...
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TriangleOrientation {
+    /// Points go around like a clock.
+    Clockwise,
+    /// Points go around opposite of a clock.
+    Counterclockwise,
+    /// Points coincide on a line.
+    Collinear
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Triangle(pub Point, pub Point, pub Point);
 
 impl Triangle {
@@ -242,6 +255,17 @@ impl Triangle {
         v0 == o0 || v0 == o1 || v0 == o2 ||
         v1 == o0 || v1 == o1 || v1 == o2 ||
         v2 == o0 || v2 == o1 || v2 == o2
+    }
+
+    /// Find the orientation of the triangle.
+    ///
+    /// See the TriangleOrientation docs for more information.
+    pub fn orientation(&self) -> TriangleOrientation {
+        use self::TriangleOrientation::*;
+        let zero = NotNaN::new(0f64).expect("Zero is not NaN");
+
+        let area = ((self.1.x - self.0.x) * (self.2.y - self.1.y)) - ((self.1.y - self.0.y) * (self.2.x - self.0.x));
+        if area > zero { Clockwise } else if area < zero { Counterclockwise } else { Collinear }
     }
 }
 

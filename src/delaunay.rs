@@ -1,6 +1,6 @@
 use ::itertools;
 
-use ::geometry::{Point, Triangle, TriangleMesh};
+use ::geometry::{Point, Triangle, TriangleMesh, LineSegment};
 
 /// Translate a list of cordinates into the Delaunay triangulation via the Boyer-Watson algorithm.
 ///
@@ -32,39 +32,36 @@ pub fn bower_watson_with_super_triangle_with_logger<L>(point_list: &[Point], sup
     logger.log(BowerWatsonLogMessage::AddSuperTriangle(&triangulation));
 
     for point in point_list {
-        println!("Adding {}", point);
+        logger.log(BowerWatsonLogMessage::AddPoint(&point));
 
         let point = point.clone();
 
-        println!("Testing triangles:");
+        logger.log(BowerWatsonLogMessage::ValidTriangleTestBegin);
 
         // Triangles that are no longer valid with the new point inserted.
         let bad_triangles: Vec<Triangle> = triangulation.iter().filter(|triangle| {
             let res = triangle.circumscribes_point(point);
-            println!("    {} -> {}.", triangle, res);
+            logger.log(BowerWatsonLogMessage::ValidTriangleTest(triangle, res));
             res
         }).map(|t| *t).collect();
 
-        println!("Removing triangles:\n    {}", itertools::join(bad_triangles.iter(), "\n    "));
+        logger.log(BowerWatsonLogMessage::RemoveTriangles(&bad_triangles));
 
-        for triangle in &bad_triangles {
-            triangulation.remove_triangle(*triangle);
+        for &triangle in &bad_triangles {
+            triangulation.remove_triangle(triangle);
         }
 
         // Create a polygon of edges from the triangles where they don't touch.
         let polygon = ::unique_elements_only(bad_triangles.iter().flat_map(Triangle::edges).collect());
 
-        println!("Polygon:\n    {}", itertools::join(&polygon, ",\n    "));
-        println!("Adding triangles:");
+        logger.log(BowerWatsonLogMessage::Polygon(&polygon));
 
         // Create new triangles going from the edge to the new point.
         for edge in polygon {
             let to_add = Triangle(edge.from, edge.to, point);
-            println!("    {}", to_add);
+            logger.log(BowerWatsonLogMessage::AddTriangle(&to_add));
             triangulation.add_triangle(to_add);
         }
-
-        println!("");
     }
 
     println!("Removing triangles touching super triangle.\n");
@@ -79,18 +76,10 @@ pub enum BowerWatsonLogMessage<'a> {
     AddSuperTriangle(&'a TriangleMesh),
     AddPoint(&'a Point),
     ValidTriangleTestBegin,
-    ValidTriangleTest(&'a Triangle, bool)
-}
-
-impl<'a> ::std::fmt::Display for BowerWatsonLogMessage<'a> {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
-        match *self {
-            BowerWatsonLogMessage::AddSuperTriangle(ref triangulation) => {
-                write!(f, "Added super triangle.\n{}\n", triangulation)
-            }
-            _ => { write!(f, "") }
-        }
-    }
+    ValidTriangleTest(&'a Triangle, bool),
+    RemoveTriangles(&'a Vec<Triangle>),
+    Polygon(&'a Vec<LineSegment>),
+    AddTriangle(&'a Triangle)
 }
 
 /// Logger trait for the BowerWatson algorithm.
@@ -113,6 +102,35 @@ pub struct PrintlnLogger;
 
 impl BowerWatsonLogger for PrintlnLogger {
     fn log(&mut self, message: BowerWatsonLogMessage) {
-        println!("{}", message);
+        match message {
+            BowerWatsonLogMessage::AddSuperTriangle(ref triangulation) => {
+                println!("Added super triangle.\n{}", triangulation)
+            },
+
+            BowerWatsonLogMessage::AddPoint(ref point) => {
+                println!("\nAdding {}", point);
+            }
+
+            BowerWatsonLogMessage::ValidTriangleTestBegin => {
+                println!("Testing triangles:")
+            },
+
+            BowerWatsonLogMessage::ValidTriangleTest(ref triangle, res) => {
+                println!("    {} -> {}.", triangle, res)
+            },
+
+            BowerWatsonLogMessage::RemoveTriangles(ref bad_triangles) => {
+                println!("Removing triangles:\n    {}", itertools::join(bad_triangles.iter(), "\n    "));
+            },
+
+            BowerWatsonLogMessage::Polygon(ref polygon) => {
+                println!("Polygon:\n    {}", itertools::join(polygon.iter(), ",\n    "));
+                println!("Adding triangles:");
+            },
+
+            BowerWatsonLogMessage::AddTriangle(ref triangle) => {
+                println!("    {}", triangle);
+            }
+        }
     }
 }

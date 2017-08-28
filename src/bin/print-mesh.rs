@@ -2,7 +2,8 @@ extern crate voroni;
 
 use voroni::NotNaN;
 use voroni::geometry::{Point, Triangle};
-use voroni::delaunay::bower_watson_with_super_triangle as bower_watson;
+use voroni::delaunay::bower_watson_with_super_triangle_with_logger as bower_watson;
+use voroni::delaunay::PrintlnLogger;
 
 fn generate_corners() -> [Point; 4] {
     [
@@ -41,7 +42,7 @@ fn main () {
         }
         points
     };
-    let out = bower_watson(&points, generate_super_triangle());
+    let out = bower_watson(&points, generate_super_triangle(), PrintlnLogger);
     println!("{}", out * &NotNaN::new(4f64).unwrap());
     println!("End of program.");
 }
