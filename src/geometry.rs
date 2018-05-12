@@ -1,6 +1,6 @@
 use std::f64::{INFINITY, EPSILON};
 use std::hash::{Hash, Hasher};
-use std::ops::{Mul};
+use std::ops::{Mul, Sub};
 use std::{fmt};
 
 use ::ordered_float::{NotNaN, FloatIsNaN};
@@ -374,6 +374,124 @@ impl IntoIterator for TriangleMesh {
 impl fmt::Display for TriangleMesh {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "TriangleMesh{{\n    {}\n}}", itertools::join(self.0.iter(), ",\n    "))
+    }
+}
+
+/// A parabola described as a focus and a directrix.
+///
+/// The parabola is the set of points where the distance between the focus
+/// and the directrix are the same.
+///
+/// The focus cannot lie on the directrix.
+pub struct FocusDirectrixParabola {
+    focus: Point,
+    /// y = directrix
+    directrix: NotNaN<f64>
+}
+
+impl FocusDirectrixParabola {
+    /// Create a new parabola with the specified focus and directrix.
+    ///
+    /// # Panics
+    ///
+    /// If the directrix equals the focus's "y" value. This would be
+    /// a degenerate 
+    pub fn new_unwrap(focus: Point, directrix: NotNaN<f64>) -> FocusDirectrixParabola {
+        if focus.y == directrix {
+            panic!("Degenerate parabola found.");
+        }
+
+        FocusDirectrixParabola { focus, directrix }
+    }
+}
+
+/// A parabola described by the equation `y = ax^2 + bx + c`.
+pub struct QuadraticParabola {
+    a: NotNaN<f64>,
+    b: NotNaN<f64>,
+    c: NotNaN<f64>
+}
+
+impl QuadraticParabola {
+    pub fn quadratic_equation(&self) -> (NotNaN<f64>, NotNaN<f64>) {
+        #![allow(non_snake_case)]
+        let TWO = NotNaN::new(2f64).expect("Two is not NaN.");
+        let FOUR = NotNaN::new(4f64).expect("Four is not NaN.");
+        let discriminant_root = (self.b * self.b - FOUR * self.a * self.c).sqrt();
+
+        let q1 = (-self.b + discriminant_root) / (TWO * self.a);
+        let q2 = (-self.b - discriminant_root) / (TWO * self.a);
+
+        (q1, q2)
+    }
+}
+
+impl From<FocusDirectrixParabola> for QuadraticParabola {
+    fn from(FocusDirectrixParabola { focus: Point {x: fx, y: fy}, directrix: dy }: FocusDirectrixParabola) -> QuadraticParabola {
+        #![allow(non_snake_case)]
+        // What follows is an explanation of the algebra used to derive these formula used in this function.
+        // 
+        // Let (x, y) be some point on the parabola.
+        // By the definition of a parabola, the distance between the focus and the point
+        // is the same as the difference between the `y` of the directix and the point.
+        //
+        // ||(x, y), (x, dy)|| = ||(x, y), (fx, fy)||.
+        // The left hand side is just `abs(y - d)` which can be rewritten for easier
+        // algebraic manipulation as `sqrt((y - dy)^2).
+        // The right hand side can be replaced by the euclidian distance formula.
+        //
+        // sqrt((y - dy)^2) = sqrt((x - fx)^2 + (y - fx)^2) 
+        // Square both sides to get rid of the sqrt. The inside will always be positive,
+        // so we don't need to worry about +/- values of everything.
+        //
+        // (y - dy)^2 = (x - fx)^2 + (y - fy)^2.
+        // Since we want to get an equation with `y = ...`, we need to get `y` on
+        // one side. But we can't do anything to `y` directly, so let's expand the
+        // squares of the squares containing `y`.
+        //
+        // y^2 - 2*y*dy + dy^2 = (x - fx)^2 + y^2 - 2*y*fy + fy^2
+        // There's a y^2 on both sides, so subtract that out on each side.
+        // `dy^2` on the left is not dependent upon `y`, so subtract that from both
+        // sides.
+        // Add `2*y*fy` to both sides to get rid of `y` from the right side completely.
+        //
+        // 2*y*fy - 2*y*dy = (x - fx)^2 + fy^2 - dy^2
+        // You can factor 2y from each term in the left side.
+        // Additionally, since we want `x` terms in linear form, we expand
+        // the square for `(x - fx)^2)
+        //
+        // 2*y*(fy - dy) = x^2 - 2*x*fx + fx^2 + fy^2 - dy^2
+        // Our final step is to divide by 2*(fy - dy). It's a constant, so let's
+        // name it `div` for readability.
+        //
+        // y = (1 / div) * x^2 + ((-2 * fx) / div) * x^1 + ((fx^2 + fy^2 - dy^2) / div) * x^0
+        // I put parens around our a, b, and c in the quadratic parabola. E.g. `(1 / div)` for `a`.
+
+        // You may note that `div` is `0` when `fy = dy`. But that would mean the
+        // focus lies on the directrix and that's not allowed.
+
+        let ONE = NotNaN::new(1f64).expect("One is not NaN.");
+        let TWO = NotNaN::new(2f64).expect("Two is not NaN.");
+
+        let div = TWO * (fy - dy);
+
+        QuadraticParabola {
+            a: ONE / div, 
+            b: -TWO * fx / div, 
+            c:  (fx * fx + fy * fy + dy * dy) / div
+        }
+    }
+}
+
+impl<'p> Sub for &'p QuadraticParabola {
+    type Output = QuadraticParabola;
+
+    fn sub(self, other: &'p QuadraticParabola) -> QuadraticParabola {
+        QuadraticParabola {
+            a: self.a - other.a,
+            b: self.b - other.b,
+            c: self.c - other.c
+        }
     }
 }
 

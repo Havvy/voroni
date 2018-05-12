@@ -4,7 +4,7 @@ extern crate half_edge;
 
 pub mod geometry;
 pub mod delaunay;
-pub mod voroni;
+pub mod voronoi_tree;
 
 use std::collections::{HashSet};
 use std::hash::{Hash};

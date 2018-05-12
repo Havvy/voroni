@@ -6,6 +6,7 @@ use std::f64::{NEG_INFINITY, INFINITY};
 use std::hash::{Hash, Hasher};
 use std::iter::FromIterator;
 use std::ops::Index;
+use std::rc::Rc;
 
 use ordered_float::{NotNaN};
 use half_edge::{ConnectivityKernel};
@@ -20,13 +21,29 @@ enum EdgeDirection{Left, Right}
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 struct VoroniEdge;
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Sweepline(Cell<NotNaN<f64>>);
+
+impl Sweepline {
+    fn new(y: NotNaN<f64>) -> Sweepline {
+        Sweepline(Cell::new(y))
+    }
+
+    fn set(&self, y: NotNaN<f64>) {
+        self.0.set(y);
+    }
+
+    fn get(&self) -> NotNaN<f64> {
+        self.0.get()
+    }
+}
 /// The breakpoint of two coinciding arcs in the beachline
 ///
 /// The struct only contains the information for calculating the breakpoint,
 /// and the actual breakpoint is on the `point` method.
 // TODO(Havvy): Derive PartialEq and Eq myself and ignore the cache.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
-struct ArcBreakpoint {
+struct ArcBreakpoint<'sl> {
     /// The site of the arc to the left on the breakpoint
     site_left: Point,
     /// The site of the arc to the right on the breakpoint
@@ -37,33 +54,39 @@ struct ArcBreakpoint {
     direction: EdgeDirection,
     /// ???
     edge_begin: Point,
+
+    /// Where the sweep location is at all time. (This gets mutated despite being a non-mutable borrow.)
+    sweep_location: &'sl Sweepline,
+
     /// Last location of the sweep location last time the breakpoint was queried.
     sweep_location_cache: Cell<NotNaN<f64>>,
     /// The last point returned last time the breakpoint was queried.
     point_cache: Cell<Point>
 }
 
-impl ArcBreakpoint {
-    fn new(site_left: Point, site_right: Point, e: VoroniEdge, direction: EdgeDirection, sweep_location: &NotNaN<f64>) -> ArcBreakpoint {
+impl<'sl> ArcBreakpoint<'sl> {
+    fn new(site_left: Point, site_right: Point, e: VoroniEdge, direction: EdgeDirection, sweep_location: &Sweepline) -> ArcBreakpoint {
         let zero = NotNaN::new(0f64).expect("0 is not NaN");
         let mut breakpoint = ArcBreakpoint {
-            site_left, site_right, e, direction,
+            site_left, site_right, e, direction, sweep_location,
 
             edge_begin: Point { x: zero, y: zero },
             sweep_location_cache: Cell::new(zero),
             point_cache: Cell::new(Point { x: zero, y: zero })
         };
-        breakpoint.edge_begin = breakpoint.point(sweep_location);
+        breakpoint.edge_begin = breakpoint.point();
         breakpoint
     }
-    /// Calculate the location of the breakpoint at the specified breakpoint.
-    fn point(&self, sweep_location: &NotNaN<f64>) -> Point {
+
+    /// Calculate the location of the breakpoint at the current sweep location.
+    fn point(&self) -> Point {
+        let sweep_location = self.sweep_location.get();
         // TODO(Havvy): Do with interior mutability?
-        if sweep_location == &self.sweep_location_cache.get() {
+        if sweep_location == self.sweep_location_cache.get() {
             return self.point_cache.get();
         }
 
-        self.sweep_location_cache.set(*sweep_location);
+        self.sweep_location_cache.set(sweep_location);
 
         // TODO(Havvy): Learn math and refactor.
         // TODO(Havvy): What happens if sweep location and y values are all the same when?
@@ -110,17 +133,38 @@ impl ArcBreakpoint {
         });
 
         // Recursive call that grabs the updated cached version.
-        self.point(sweep_location)
+        self.point()
     }
 }
 
-impl Hash for ArcBreakpoint {
+impl<'sl> Hash for ArcBreakpoint<'sl> {
     fn hash<H>(&self, hasher: &mut H) where H: Hasher  {
+        // FIXME(Havvy): Some of these fields change?
         self.site_left.hash(hasher);
         self.site_right.hash(hasher);
         self.e.hash(hasher);
         self.direction.hash(hasher);
         self.edge_begin.hash(hasher);
+    }
+}
+
+struct Breakpoints<'sl>(HashSet<Rc<ArcBreakpoint<'sl>>>);
+
+impl<'sl> Breakpoints<'sl> {
+    fn new() -> Breakpoints<'sl> {
+        Breakpoints(HashSet::new())
+    }
+
+    fn insert(&mut self, breakpoint: ArcBreakpoint<'sl>) -> Rc<ArcBreakpoint<'sl>> {
+        let rc = Rc::new(breakpoint);
+
+        self.0.insert(rc.clone());
+
+        rc
+    }
+
+    fn remove(&mut self, breakpoint: Rc<ArcBreakpoint<'sl>>) {
+        self.0.remove(&breakpoint);
     }
 }
 
@@ -131,20 +175,20 @@ impl Hash for ArcBreakpoint {
 /// The first arc cannot have breakpoints as no other arcs to break against.
 /// Afterwards, only the leftmost arc's left breakpoint and rightmost arc's right breakpoint
 /// will be None. 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct Arc {
-    /// The associated site to the arc.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Arc<'sl> {
+    /// The location of the site event that created the arc.
     site: Point,
-    left: Option<ArcBreakpoint>,
-    right: Option<ArcBreakpoint>
+    left: Option<Rc<ArcBreakpoint<'sl>>>,
+    right: Option<Rc<ArcBreakpoint<'sl>>>
 }
 
-impl Arc {
-    fn first(site: Point) -> Arc {
+impl<'sl> Arc<'sl> {
+    fn first(site: Point) -> Arc<'sl> {
         Arc { site, left: None, right: None }
     }
 
-    fn new(left: Option<ArcBreakpoint>, right: Option<ArcBreakpoint>) -> Arc {
+    fn new(left: Option<Rc<ArcBreakpoint<'sl>>>, right: Option<Rc<ArcBreakpoint<'sl>>>) -> Arc<'sl> {
         let site = match (&left, &right) {
             (&Some(ref bp), _) => bp.site_right,
             (_, &Some(ref bp)) => bp.site_left,
@@ -155,31 +199,20 @@ impl Arc {
     }
 
     /// Whether or not the point is located under the arc.
-    fn is_point_under(&self, point: &Point, sweep_location: &NotNaN<f64>) -> bool {
-        if point.x >= self.left_breakpoint(sweep_location).x && point.x <= self.right_breakpoint(sweep_location).x {
-            return true;
-        }
-
-        // FIXME(Havvy): Is any of this needed?
-        //if (myLeft.x == yourLeft.x && myRight.x == yourRight.x) return 0;
-        //         if (myLeft.x >= yourRight.x) return 1;
-        //         if (myRight.x <= yourLeft.x) return -1;
-
-        // return Point.midpoint(myLeft, myRight).compareTo(Point.midpoint(yourLeft, yourRight));
-
-        false
+    fn is_point_under(&self, point: &Point) -> bool {
+        point.x >= self.left_breakpoint().x && point.x <= self.right_breakpoint().x
     }
 
-    fn left_breakpoint(&self, sweep_location: &NotNaN<f64>) -> Point {
+    fn left_breakpoint(&self) -> Point {
         match self.left {
-            Some(ref left) => left.point(sweep_location),
+            Some(ref left) => left.point(),
             None => Point::new_unwrap(NEG_INFINITY, INFINITY)
         }
     }
 
-    fn right_breakpoint(&self, sweep_location: &NotNaN<f64>) -> Point {
+    fn right_breakpoint(&self) -> Point {
         match self.left {
-            Some(ref right) => right.point(sweep_location),
+            Some(ref right) => right.point(),
             None => Point::new_unwrap(INFINITY, INFINITY)
         }
     }
@@ -194,8 +227,8 @@ impl Arc {
         match *self {
             Arc { left: None, .. } => None,
             Arc { right: None, .. } => None,
-            Arc { left: Some(ref left), right: Some(ref right), ref site } => {
-                if Triangle(left.site_left, self.site, right.site_right).orientation() != TriangleOrientation::Counterclockwise {
+            Arc { left: Some(ref left), right: Some(ref right), site } => {
+                if Triangle(left.site_left, site, right.site_right).orientation() != TriangleOrientation::Counterclockwise {
                     None
                 } else {
                     // FIXME(Havvy): return (this.left.getEdge().intersection(this.right.getEdge()));
@@ -205,48 +238,105 @@ impl Arc {
         }
     }
 
-    fn get_circle_event(&self) -> Option<Event> {
+    fn get_circle_event(&self) -> Option<Event<'sl>> {
         self.circle_event_center().map(|center| {
             let radius = (LineSegment { from: self.site, to: center }).length();
-            let circle_event_point = Point { x: center.x, y: center.y - radius };
             Circle {
-                arc: (*self).clone(),
                 site: Point { x: center.x, y: center.y - radius },
+                arc: (*self).clone(),
                 vertex: center
             }
         })
     }
 }
 
+impl<'sl> PartialOrd for Arc<'sl> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+// FIXME(Havvy): These are _false_ impls. Arcs cannot be ordered alone.
+impl<'sl> Ord for Arc<'sl> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let my_left = self.left_breakpoint();
+        let my_right = self.right_breakpoint();
+        let other_left = other.left_breakpoint();
+        let other_right = other.right_breakpoint();
+
+        if my_left.x == other_left.x && my_right.x == other_right.x {
+            Ordering::Equal
+        } else if my_left.x >= other_right.x {
+            Ordering::Greater
+        } else if my_right.x <= other_left.x {
+            Ordering::Less
+        } else {
+            let my_midpoint = (LineSegment { from: my_left, to: my_right }).midpoint();
+            let other_midpoint = (LineSegment { from: other_left, to: other_right }).midpoint();
+
+            my_midpoint.cmp(&other_midpoint)
+        }
+    }
+}
+
 /// The beachline is a map from Arcs to their associated Circle Events, if they have one.
 #[derive(Debug)]
-struct Beachline(BTreeMap<Arc, Option<Event>>);
+struct Beachline<'sl>(BTreeMap<Arc<'sl>, Option<Event<'sl>>>);
 
-impl Beachline {
-    fn new() -> Beachline {
+impl<'sl> Beachline<'sl> {
+    fn new() -> Beachline<'sl> {
         Beachline(BTreeMap::new())
     }
 
-    fn arcs<'bl>(&'bl self) -> ::std::collections::btree_map::Keys<'bl, Arc, Option<Event>> {
+    fn arcs<'bl>(&'bl self) -> ::std::collections::btree_map::Keys<'bl, Arc<'sl>, Option<Event<'sl>>> {
         self.0.keys()
+    }
+
+    fn remove_adjacent_arcs(&mut self, arc: &Arc<'sl>, event_queue: &mut EventQueue<'sl>) -> (Arc<'sl>, Arc<'sl>) {
+        let arc_left = self
+        .arcs()
+        .filter(|beacharc| beacharc < &arc)
+        .last()
+        .expect("Only called with a circle event arc, so adjacent arcs must exist.")
+        .clone();
+
+        let arc_right = self
+        .arcs()
+        .filter(|beacharc| beacharc > &arc)
+        .next()
+        .expect("Only called with a circle event arc, so adjacent arcs must exist.")
+        .clone();
+
+        self.remove(&arc_left, event_queue);
+        self.remove(&arc_right, event_queue);
+        
+        (arc_left, arc_right)
     }
 
     /// Put a new arc into the beachline with its associated circle event.
     /// When there aren't enough points for a circle event (less than 3?),
     /// then put None for the circle event.
-    fn insert(&mut self, arc: Arc, event: Option<Event>) {
+    fn insert(&mut self, arc: Arc<'sl>, event: Option<Event<'sl>>) {
         self.0.insert(arc, event);
     }
 
-    fn remove(&mut self, arc: &Arc) -> Option<Event> {
-        self.0.remove(arc).expect("Removed arc is in the beachline")
+    fn remove(&mut self, arc: &Arc<'sl>, event_queue: &mut EventQueue<'sl>) {
+        let maybe_event = self.0.remove(arc).expect("Removed arc is in the beachline");
+
+        if let Some(circle_event) = maybe_event {
+            event_queue.remove(circle_event);
+        }
+    }
+
+    fn remove_only(&mut self, arc: &Arc<'sl>) {
+        self.0.remove(arc);
     }
 }
 
-impl<'a> Index<&'a Arc> for Beachline {
-    type Output = Option<Event>;
+impl<'a, 'sl> Index<&'a Arc<'sl>> for Beachline<'sl> {
+    type Output = Option<Event<'sl>>;
 
-    fn index(&self, arc: &'a Arc) -> &Option<Event> {
+    fn index(&self, arc: &'a Arc<'sl>) -> &Option<Event<'sl>> {
         &self.0[arc]
     }
 }
@@ -255,25 +345,30 @@ impl<'a> Index<&'a Arc> for Beachline {
 ///
 /// Events are compared where the lowest `y` value is the greatest.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum Event {
+enum Event<'sl> {
     /// The sweepline is passing this point.
     Site(Point),
 
-    /// 
+    /// An arc collapsed into a single point.
     Circle {
-        arc: Arc,
+        /// The site of the circle's event.
         site: Point,
+
+        /// The arc that has collapsed into a point when the site is handled.
+        arc: Arc<'sl>,
+
+        /// The point the arc collasped at.
         vertex: Point
     }
 }
 
-impl Event {
-    fn handle(self, event_queue: &mut EventQueue, beachline: &mut Beachline, sweep_location: &mut NotNaN<f64>, breakpoints: &mut HashSet<ArcBreakpoint>, _voroni: &mut ConnectivityKernel) {
+impl<'sl> Event<'sl> {
+    fn handle(self, event_queue: &mut EventQueue<'sl>, beachline: &mut Beachline<'sl>, sweep_location: &'sl Sweepline, breakpoints: &mut Breakpoints<'sl>, _voroni: &mut ConnectivityKernel) {
         match self {
             Site(site) => {
                 let arc_above_site = beachline
                 .arcs()
-                .find(|arc| arc.is_point_under(&site, &*sweep_location))
+                .find(|arc| arc.is_point_under(&site))
                 .expect("There is always an arc above every non-initial site.")
                 .clone();
 
@@ -296,9 +391,7 @@ impl Event {
 
                 // Remove the circle event associated with this arc if there is one
                 // Also remove the arc from the beachline, to be replaced by three other arcs below.
-                if let Some(ref circle_event) = beachline.remove(&arc_above_site) {
-                    event_queue.remove(circle_event.clone());
-                }
+                beachline.remove(&arc_above_site, event_queue);
 
                 // Create and insert 3 arcs to replace the removed arc ealier.
                 // The center arc has 0 width at the current sweep line, but will grow out
@@ -312,11 +405,11 @@ impl Event {
                 // VoronoiEdge newEdge = new VoronoiEdge(arcAbove.site, cur.p);
                 // this.edgeList.add(newEdge);
                 let left_arc_right_breakpoint = ArcBreakpoint::new(arc_above_site.site, site, edge, EdgeDirection::Left, sweep_location);
-                breakpoints.insert(left_arc_right_breakpoint.clone());
+                let left_arc_right_breakpoint = breakpoints.insert(left_arc_right_breakpoint);
                 let left_arc_right_breakpoint = Some(left_arc_right_breakpoint);
 
                 let right_arc_left_breakpoint = ArcBreakpoint::new(arc_above_site.site, site, edge, EdgeDirection::Right, sweep_location);
-                breakpoints.insert(right_arc_left_breakpoint.clone());
+                let right_arc_left_breakpoint = breakpoints.insert(right_arc_left_breakpoint);
                 let right_arc_left_breakpoint = Some(right_arc_left_breakpoint);
 
                 let arc_left = Arc::new(left_arc_left_breakpoint, left_arc_right_breakpoint.clone());
@@ -329,6 +422,7 @@ impl Event {
                 }
                 beachline.insert(arc_left, arc_left_event);
 
+                // As a new 
                 beachline.insert(arc_center, None);
 
                 let arc_right_event = arc_right.get_circle_event();
@@ -337,26 +431,12 @@ impl Event {
                 }
                 beachline.insert(arc_right, arc_right_event);
             },
-            Circle { arc, site, vertex } => {
-                // Arc arcRight = beachline.higherKey(ce.arc);
-                // Arc arcLeft = beachline.lowerKey(ce.arc);
-                //
-                // CircleEvent falseCe = beachline.get(arcRight);
-                // if (falseCe != null) events.remove(falseCe);
-                // beachline.put(arcRight, null);
-                //
-                // CircleEvent falseCe = beachline.get(arcLeft);
-                // if (falseCe != null) events.remove(falseCe);
-                // beachline.put(arcLeft, null);
-                //
-                // beachline.remove(ce.arc);
+            Circle { arc, site: _site, vertex: _vertex } => {
+                let (arc_left, arc_right) = beachline.remove_adjacent_arcs(&arc, event_queue);
+                beachline.remove_only(&arc);
 
-
-                // ce.arc.left.finish(ce.vert);
-                // ce.arc.right.finish(ce.vert);
-
-                breakpoints.remove(arc.left);
-                breakpoints.remove(arc.right);
+                breakpoints.remove(arc.left.expect("Left arc exists in circle event."));
+                breakpoints.remove(arc.right.expect("Right arc exists in circle event."));
 
                 // VoronoiEdge e = new VoronoiEdge(ce.arc.left.site_left, ce.arc.right.site_right);
                 // edgeList.add(e);
@@ -396,43 +476,43 @@ impl Event {
     }
 }
 
-impl PartialOrd for Event {
+impl<'sl> PartialOrd for Event<'sl> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Event {
+impl<'sl> Ord for Event<'sl> {
     fn cmp(&self, other: &Self) -> Ordering {
         // Note the ! operand.
         self.y().cmp(&other.y()).reverse()
     }
 }
 
-impl From<Point> for Event {
-    fn from(p: Point) -> Event {
+impl<'sl> From<Point> for Event<'sl> {
+    fn from(p: Point) -> Event<'sl> {
         Site(p)
     }
 }
 
-struct EventQueue {
-    queue: BinaryHeap<Event>,
-    removed_events: HashSet<Event>
+struct EventQueue<'sl> {
+    queue: BinaryHeap<Event<'sl>>,
+    removed_events: HashSet<Event<'sl>>
 }
 
-impl EventQueue {
-    fn new<I>(sites: I) -> EventQueue where I: Iterator<Item=Event> {
+impl<'sl> EventQueue<'sl> {
+    fn new<I>(sites: I) -> EventQueue<'sl> where I: Iterator<Item=Event<'sl>> {
         EventQueue {
             queue: BinaryHeap::from_iter(sites),
             removed_events: HashSet::new()
         }
     }
 
-    fn insert(&mut self, event: Event) {
+    fn insert(&mut self, event: Event<'sl>) {
         self.queue.push(event);
     }
 
-    fn pop(&mut self) -> Option<Event> {
+    fn pop(&mut self) -> Option<Event<'sl>> {
         loop {
             match self.queue.pop() {
                 Some(event) => {
@@ -446,35 +526,38 @@ impl EventQueue {
         }
     }
 
-    fn remove(&mut self, event: Event) {
+    fn remove(&mut self, event: Event<'sl>) {
         self.removed_events.insert(event);
     }
 }
 
 
 pub fn fortune(sites: &[Point]) -> ConnectivityKernel {
-    // TODO: Consider BTreeSet?
-    let mut event_queue = EventQueue::new(sites.into_iter().map(|&site| Site(site)));
-    let mut breakpoints = HashSet::<ArcBreakpoint>::new();
-    let mut beachline = Beachline::new();
-    let mut sweep_location: NotNaN<f64>;
+    let sweep_location: &Sweepline = &Sweepline::new(NotNaN::new(0f64).expect("Zero is not NaN"));
     let mut voroni = ConnectivityKernel::new();
 
-    // Deal with the first point specially.
-    match event_queue.pop() {
-        Some(Site(site)) => {
-            beachline.insert(Arc::first(site), None);
-        }
-        None => {
-            // No points were given.
-            return voroni;
-        },
-        _ => panic!("First event must be a Site event if it exists.")
-    };
+    {
+        let mut event_queue = EventQueue::new(sites.into_iter().map(|&site| Site(site)));
+        let mut breakpoints = Breakpoints::new();
+        let mut beachline = Beachline::new();
 
-    while let Some(event) = event_queue.pop() {
-        sweep_location = event.y();
-        event.handle(&mut event_queue, &mut beachline, &mut sweep_location, &mut breakpoints, &mut voroni);
+        // Deal with the first point specially.
+        match event_queue.pop() {
+            Some(Site(site)) => {
+                sweep_location.set(site.y);
+                beachline.insert(Arc::first(site), None);
+            },
+            None => {
+                // No points were given.
+                return voroni;
+            },
+            _ => panic!("First event must be a Site event if it exists.")
+        };
+
+        while let Some(event) = event_queue.pop() {
+            sweep_location.set(event.y());
+            event.handle(&mut event_queue, &mut beachline, &sweep_location, &mut breakpoints, &mut voroni);
+        }
     }
 
     voroni
